@@ -93,6 +93,7 @@ func NewLinter(patterns []string, options ...Option) (*Linter, error) {
 type visitor struct {
 	cfg        config
 	isTestFile bool // godoc only runs on test files
+	isDebug    bool // the caller supplied a DebugLog
 
 	linter   *Linter
 	comments []*ast.CommentGroup
@@ -118,12 +119,14 @@ type RunConfig struct {
 	// Nil disables that step, i.e. patterns match the literal source code.
 	TypesInfo *types.Info
 
-	// DebugLog is used to print debug messages. May be nil.
+	// DebugLog is used to print debug messages. May be nil, which is cheaper
+	// than a function that discards them.
 	DebugLog func(format string, args ...interface{})
 }
 
 func (l *Linter) RunWithConfig(config RunConfig, nodes ...ast.Node) ([]Issue, error) {
-	if config.DebugLog == nil {
+	isDebug := config.DebugLog != nil
+	if !isDebug {
 		config.DebugLog = func(format string, args ...interface{}) {}
 	}
 	var issues []Issue
@@ -168,6 +171,7 @@ func (l *Linter) RunWithConfig(config RunConfig, nodes ...ast.Node) ([]Issue, er
 		visitor := visitor{
 			cfg:        l.cfg,
 			isTestFile: isTestFile,
+			isDebug:    isDebug,
 			linter:     l,
 			runConfig:  config,
 			comments:   comments,
@@ -233,11 +237,13 @@ func (v *visitor) Visit(node ast.Node) ast.Visitor {
 	// is enabled.
 	srcText := v.textFor(node)
 	matchTexts, pkgText := v.expandMatchText(node, srcText)
-	v.runConfig.DebugLog("%s: match %v, package %q", v.runConfig.Fset.Position(node.Pos()), matchTexts, pkgText)
+	if v.isDebug {
+		v.runConfig.DebugLog("%s: match %v, package %q", v.runConfig.Fset.Position(node.Pos()), matchTexts, pkgText)
+	}
 	for _, p := range v.linter.patterns {
 		if p.matches(matchTexts) &&
 			(p.Package == "" || p.pkgRe.MatchString(pkgText)) &&
-			!v.permit(node) {
+			!v.permit(node, srcText) {
 			v.issues = append(v.issues, UsedIssue{
 				identifier: srcText, // Always report the expression as it appears in the source code.
 				pattern:    p.re.String(),
@@ -261,6 +267,10 @@ func (v *visitor) Visit(node ast.Node) ast.Visitor {
 // textFor returns the expression as it appears in the source code (for
 // example, <importname>.<function name>).
 func (v *visitor) textFor(node ast.Node) string {
+	if text, ok := plainText(v.runConfig.Fset, node); ok {
+		return text
+	}
+
 	buf := new(bytes.Buffer)
 	if err := printer.Fprint(buf, v.runConfig.Fset, node); err != nil {
 		log.Fatalf("ERROR: unable to print node at %s: %s", v.runConfig.Fset.Position(node.Pos()), err)
@@ -315,7 +325,7 @@ func (v *visitor) expandMatchText(node ast.Node, srcText string) (matchTexts []s
 
 		// If we are lucky, the entire selector expression has a known
 		// type. We don't care about the value.
-		selectorText := v.textFor(node)
+		selectorText := srcText
 		if typeAndValue, ok := v.runConfig.TypesInfo.Types[selector]; ok {
 			if typeName, pkgPath, ok := typeNameWithPackage(typeAndValue.Type); ok {
 				v.runConfig.DebugLog("%s: selector %q with supported type %q: %q -> %q, package %q", location, selectorText, typeAndValue.Type.String(), srcText, matchTexts, pkgPath)
@@ -389,12 +399,12 @@ func typeNameWithPackage(t types.Type) (typeName, packagePath string, ok bool) {
 	}
 }
 
-func (v *visitor) permit(node ast.Node) bool {
+func (v *visitor) permit(node ast.Node, srcText string) bool {
 	if v.cfg.IgnorePermitDirectives {
 		return false
 	}
 	nodePos := v.runConfig.Fset.Position(node.Pos())
-	nolint := regexp.MustCompile(fmt.Sprintf(`^//\s?permit:%s\b`, regexp.QuoteMeta(v.textFor(node))))
+	nolint := regexp.MustCompile(fmt.Sprintf(`^//\s?permit:%s\b`, regexp.QuoteMeta(srcText)))
 	for _, c := range v.comments {
 		commentPos := v.runConfig.Fset.Position(c.Pos())
 		if commentPos.Line == nodePos.Line && len(c.List) > 0 && nolint.MatchString(c.List[0].Text) {
