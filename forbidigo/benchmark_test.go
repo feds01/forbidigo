@@ -72,11 +72,22 @@ func BenchmarkRun(b *testing.B) {
 		b.Fatal(err)
 	}
 
-	b.ReportAllocs()
-	b.ResetTimer()
-	for b.Loop() {
-		if _, err := linter.RunWithConfig(RunConfig{Fset: fset}, nodes...); err != nil {
-			b.Fatal(err)
-		}
+	nopDebugLog := func(format string, args ...interface{}) {}
+
+	for name, debugLog := range map[string]func(string, ...interface{}){
+		"nil_debug_log": nil,
+		"nop_debug_log": nopDebugLog,
+	} {
+		b.Run(name, func(b *testing.B) {
+			runConfig := RunConfig{Fset: fset, DebugLog: debugLog}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				if _, err := linter.RunWithConfig(runConfig, nodes...); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

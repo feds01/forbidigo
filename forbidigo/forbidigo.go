@@ -93,6 +93,7 @@ func NewLinter(patterns []string, options ...Option) (*Linter, error) {
 type visitor struct {
 	cfg        config
 	isTestFile bool // godoc only runs on test files
+	isDebug    bool // the caller supplied a DebugLog
 
 	linter   *Linter
 	comments []*ast.CommentGroup
@@ -118,12 +119,14 @@ type RunConfig struct {
 	// Nil disables that step, i.e. patterns match the literal source code.
 	TypesInfo *types.Info
 
-	// DebugLog is used to print debug messages. May be nil.
+	// DebugLog is used to print debug messages. May be nil, which is cheaper
+	// than a function that discards them.
 	DebugLog func(format string, args ...interface{})
 }
 
 func (l *Linter) RunWithConfig(config RunConfig, nodes ...ast.Node) ([]Issue, error) {
-	if config.DebugLog == nil {
+	isDebug := config.DebugLog != nil
+	if !isDebug {
 		config.DebugLog = func(format string, args ...interface{}) {}
 	}
 	var issues []Issue
@@ -168,6 +171,7 @@ func (l *Linter) RunWithConfig(config RunConfig, nodes ...ast.Node) ([]Issue, er
 		visitor := visitor{
 			cfg:        l.cfg,
 			isTestFile: isTestFile,
+			isDebug:    isDebug,
 			linter:     l,
 			runConfig:  config,
 			comments:   comments,
@@ -233,7 +237,9 @@ func (v *visitor) Visit(node ast.Node) ast.Visitor {
 	// is enabled.
 	srcText := v.textFor(node)
 	matchTexts, pkgText := v.expandMatchText(node, srcText)
-	v.runConfig.DebugLog("%s: match %v, package %q", v.runConfig.Fset.Position(node.Pos()), matchTexts, pkgText)
+	if v.isDebug {
+		v.runConfig.DebugLog("%s: match %v, package %q", v.runConfig.Fset.Position(node.Pos()), matchTexts, pkgText)
+	}
 	for _, p := range v.linter.patterns {
 		if p.matches(matchTexts) &&
 			(p.Package == "" || p.pkgRe.MatchString(pkgText)) &&

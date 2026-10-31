@@ -1,7 +1,10 @@
 package forbidigo
 
 import (
+	"fmt"
 	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path"
 	"regexp"
@@ -296,4 +299,36 @@ func parseFile(t *testing.T, linter *Linter, expand bool, fileName, contents str
 		t.Fatalf("unable to parse file: %s", err)
 	}
 	return issues
+}
+
+func TestDebugLog(t *testing.T) {
+	const src = `package bar
+
+func foo() {
+	fmt.Printf("here i am")
+}`
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "testing.go", src, parser.ParseComments)
+	require.NoError(t, err)
+
+	linter, err := NewLinter([]string{`^fmt\.Printf$`})
+	require.NoError(t, err)
+
+	t.Run("logs every match when DebugLog is set", func(t *testing.T) {
+		var messages []string
+		debugLog := func(format string, args ...interface{}) {
+			messages = append(messages, fmt.Sprintf(format, args...))
+		}
+
+		issues, err := linter.RunWithConfig(RunConfig{Fset: fset, DebugLog: debugLog}, file)
+		require.NoError(t, err)
+		assert.Len(t, issues, 1)
+		assert.Contains(t, messages, "testing.go:4:2: match [fmt.Printf], package \"\"")
+	})
+
+	t.Run("reports the same issues when DebugLog is nil", func(t *testing.T) {
+		issues, err := linter.RunWithConfig(RunConfig{Fset: fset}, file)
+		require.NoError(t, err)
+		assert.Len(t, issues, 1)
+	})
 }
